@@ -6,7 +6,6 @@ import {
   TextInput,
   Textlink,
 } from "~/components/ui-library";
-import { signUp } from "aws-amplify/auth";
 
 export default function Register() {
   const [email, setEmail] = useState("");
@@ -16,10 +15,6 @@ export default function Register() {
 
   const handleRegisterUser = async () => {
     try {
-      await signUp({
-        username: email,
-        password: password,
-      });
       setSuccess("Account registered!");
     } catch (error) {
       setError((error as Error).message || "An error occurred during sign-up");

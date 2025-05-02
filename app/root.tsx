@@ -6,9 +6,6 @@ import {
   ScrollRestoration,
 } from "@remix-run/react";
 import type { LinksFunction, LoaderFunction } from "@remix-run/node";
-import { Amplify } from "aws-amplify";
-import awsconfig from "../src/aws-exports";
-import "../app/utils/amplify";
 
 import "./tailwind.css";
 
@@ -28,8 +25,6 @@ export const links: LinksFunction = () => [
     href: "https://cdn.jsdelivr.net/npm/remixicon/fonts/remixicon.css",
   },
 ];
-
-Amplify.configure(awsconfig);
 
 export function Layout({ children }: { children: React.ReactNode }) {
   return <>{children}</>;

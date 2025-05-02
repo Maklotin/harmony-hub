@@ -1,9 +1,11 @@
-import React, { useState, useCallback } from "react";
+import { useState } from "react";
 import Select from "react-select";
-import Anthropic from "@anthropic-ai/sdk";
+import { generateObject } from "ai";
+import { createGoogleGenerativeAI, google } from "@ai-sdk/google";
 import optionsJSON from "../utils/options.json";
 import { Box, Button, LoadingSpinner, SongCard, TextInput } from "./ui-library";
-import responseStructure from "../utils/responseStructure.json";
+import { threeSongsSchema } from "~/utils/songSchema";
+import { SongRecommendations } from "~/utils/songSchema";
 
 interface Message {
   isUser: boolean;
@@ -20,6 +22,10 @@ const mapOptions = (options: string[]) =>
     value: option.toLowerCase(),
     label: option,
   }));
+
+const googleClient = createGoogleGenerativeAI({
+  apiKey: import.meta.env.VITE_GOOGLE_API_KEY,
+});
 
 const sGenreOptions = mapOptions(optionsJSON.Simple.Genre);
 const sThemeOptions = mapOptions(optionsJSON.Simple.Theme);
@@ -84,24 +90,7 @@ const DiscoverMusic = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [advanced, setAdvanced] = useState(false);
-  const [songs, setSongs] = useState<any>(null);
-
-  const ClaudeInstruction =
-    "You are a music bot on a mission to help users discover new music (both niche and popular music). You provide music based on the user's inputted genre, theme, and tempo along with a custom message. " +
-    "You must respond with the song title, artist name, album name, release year, and genre (up to 2 genres) based on the song/album description. " +
-    "Ensure that the album cover URL is sourced directly from a reliable API such as last.fm, Discogs, or Spotify's public API. " +
-    "For links, prioritize official Spotify URLs by searching the track or album on Spotify's web interface and using the full shareable link. " +
-    "If you cannot find a valid Spotify link, fallback to a working YouTube link instead. Always ensure the provided links work properly for Norwegian users by testing the URLs. " +
-    "If no relevant song is found, respond with a message indicating that no suitable match could be found." +
-    "Respond ONLY in the following JSON format: " +
-    JSON.stringify(responseStructure) +
-    ". Song genre: " +
-    selectedGenre +
-    ", song theme: " +
-    selectedTheme +
-    ", song tempo: " +
-    selectedTempo +
-    ".";
+  const [songs, setSongs] = useState<SongRecommendations | null>(null);
 
   const getSpotifyAccessToken = async () => {
     const response = await fetch("https://accounts.spotify.com/api/token", {
@@ -124,17 +113,6 @@ const DiscoverMusic = () => {
     const data = await response.json();
     return data.access_token;
   };
-
-  const anthropic = useCallback(() => {
-    const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY;
-    if (!apiKey) {
-      throw new Error("Missing Anthropic API key");
-    }
-    return new Anthropic({
-      apiKey,
-      dangerouslyAllowBrowser: true,
-    });
-  }, []);
 
   const fetchSpotifyLink = async (trackName: string, artist: string) => {
     const accessToken = await getSpotifyAccessToken();
@@ -174,59 +152,89 @@ const DiscoverMusic = () => {
     }
   };
 
-  const sendMessageToClaude = async () => {
-    if (!inputText.trim()) return;
+  const sendMessageWithAI = async () => {
+    if (!selectedGenre || !selectedTheme || !selectedTempo) return;
 
     setLoading(true);
     setError(null);
-    try {
-      const messageHistory: MessageParam[] = [
-        {
-          role: "assistant",
-          content: ClaudeInstruction,
-        },
-        ...messages.map((msg) => ({
-          role: msg.isUser ? "user" : ("assistant" as "user" | "assistant"),
-          content: msg.text,
-        })),
-        {
-          role: "user",
-          content: inputText,
-        },
-      ];
 
-      const response = await anthropic().messages.create({
-        model: "claude-3-sonnet-20240229",
-        max_tokens: 1024,
-        messages: messageHistory,
+    try {
+      const prompt = `You are a music recommendation bot. Generate 3 songs that match the following criteria:
+      - Genre: ${selectedGenre}
+      - Theme: ${selectedTheme}
+      - Tempo: ${selectedTempo}
+      - Additional information: ${inputText}
+      
+      Each song should be unique and interesting. Include songs that are both well-known and more obscure.
+      For each song, provide:
+      - Title
+      - Artist name
+      - Album name
+      - Release year
+      - Genre (up to 2 genres separated by comma)
+      
+      IMPORTANT: For albumcover, use "/public/album_placeholder.png" and DO NOT use any example.com URLs or placeholder URLs. Just set albumcover to "/public/album_placeholder.png" and we will replace it with the actual image later.
+      
+      Format the response exactly as requested by the schema.`;
+
+      const { object: songRecommendations } = await generateObject({
+        model: googleClient.chat("gemini-1.5-flash"),
+        schema: threeSongsSchema,
+        prompt,
       });
 
-      const responseText =
-        response?.content?.[0]?.type === "text" && response?.content?.[0]?.text
-          ? response.content[0].text
-          : "No response from Claude";
+      const enhancedSongs = { ...songRecommendations };
 
-      const parsedResponse = JSON.parse(responseText);
+      for (const key of ["1", "2", "3"] as const) {
+        const song = enhancedSongs[key];
 
-      for (const key in parsedResponse) {
-        const song = parsedResponse[key];
-        song.link.spotify = await fetchSpotifyLink(song.title, song.artist);
-        song.albumcover = await fetchAlbumCover(song.artist, song.album);
+        if (
+          !song.albumcover ||
+          song.albumcover.includes("example.com") ||
+          song.albumcover.includes("placeholder") ||
+          !song.albumcover.startsWith("/")
+        ) {
+          song.albumcover = "/album_placeholder.png";
+        }
+
+        try {
+          song.link.spotify = await fetchSpotifyLink(song.title, song.artist);
+        } catch (error) {
+          console.error(
+            `Error fetching Spotify link for ${song.title}:`,
+            error
+          );
+        }
+
+        try {
+          const albumCover = await fetchAlbumCover(song.artist, song.album);
+          if (albumCover && albumCover !== "public/album_placeholder.png") {
+            song.albumcover = albumCover;
+          }
+        } catch (error) {
+          console.error(`Error fetching album cover for ${song.title}:`, error);
+        }
       }
+
+      setSongs(enhancedSongs);
 
       setMessages((prev) => [
         ...prev,
-        { isUser: true, text: inputText },
-        { isUser: false, text: responseText },
+        {
+          isUser: true,
+          text: `Genre: ${selectedGenre}, Theme: ${selectedTheme}, Tempo: ${selectedTempo}, Info: ${inputText}`,
+        },
+        { isUser: false, text: JSON.stringify(enhancedSongs, null, 2) },
       ]);
 
-      setSongs(parsedResponse);
+      // Reset input text
       setInputText("No additional information");
     } catch (err: unknown) {
-      setError(
-        (err as Error).message || "An error occurred while sending the message"
-      );
       console.error("Error:", err);
+      setError(
+        (err as Error).message ||
+          "An error occurred while generating recommendations"
+      );
     } finally {
       setLoading(false);
     }
@@ -242,7 +250,7 @@ const DiscoverMusic = () => {
           Discover new music!
         </h1>
 
-        <div className="flex flex-col justify-center mt-8 ">
+        <div className="flex flex-col justify-center mt-8">
           <div className="flex justify-center">
             <input
               type="checkbox"
@@ -267,7 +275,7 @@ const DiscoverMusic = () => {
               onChange={(option) => setSelectedTheme(option?.value || null)}
               required
             />
-            <h6>Temp</h6>
+            <h6>Tempo</h6>
             <Select
               options={advanced ? aTempoOptions : sTempoOptions}
               styles={selectStyles}
@@ -285,24 +293,25 @@ const DiscoverMusic = () => {
             onChange={(e) => setInputText(e.target.value)}
             disabled={loading}
           />
+
           {!selectedGenre || !selectedTheme || !selectedTempo ? (
             <p className="text-red-500 mt-4 text-xs">
               Please select genre, theme and tempo to get recommendations.
             </p>
-          ) : (
-            <></>
-          )}
+          ) : null}
+
           <Button
-            onClick={sendMessageToClaude}
+            onClick={sendMessageWithAI}
             disabled={
               loading || !selectedGenre || !selectedTheme || !selectedTempo
             }
             type="submit"
             className="disabled:bg-blush disabled:!shadow-ultraViolet disabled:cursor-not-allowed"
           >
-            {loading ? "Retreiving songs..." : "Get recommendations"}
+            {loading ? "Retrieving songs..." : "Get recommendations"}
           </Button>
         </div>
+
         {error && (
           <div
             className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4"
@@ -320,8 +329,8 @@ const DiscoverMusic = () => {
             </div>
           ) : (
             songs &&
-            Object.values(songs).map((song: any, index: number) => (
-              <SongCard key={index} song={song} />
+            Object.entries(songs).map(([key, song]) => (
+              <SongCard key={key} song={song} />
             ))
           )}
         </div>

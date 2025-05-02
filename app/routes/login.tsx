@@ -5,7 +5,6 @@ import {
   Textlink,
   ClickableLogo,
 } from "~/components/ui-library";
-import { signIn, getCurrentUser } from "aws-amplify/auth";
 import { useState, useEffect } from "react";
 import { useNavigate } from "@remix-run/react";
 
@@ -19,10 +18,8 @@ export default function Login() {
   useEffect(() => {
     const checkUser = async () => {
       try {
-        await getCurrentUser();
         navigate("/");
       } catch {
-        // User is not authenticated
       }
     };
 
@@ -32,7 +29,6 @@ export default function Login() {
   const handleLogin = async () => {
     console.log("Attempting login...");
     try {
-      await signIn({ username: email, password });
       navigate("/", { replace: true });
     } catch (error) {
       setError((error as Error).message || "An error occurred during sign-in");
